@@ -1,0 +1,15 @@
+{
+  "logo": {"type": "none"},
+  "display": {"separator": " ", "key": {"width": 0}, "percent": {"type": 0}},
+  "modules": [
+    {"type": "os", "key": "", "format": "{name} {arch}"},
+    {"type": "kernel", "key": "", "format": "{sysname} {release}"},
+    {"type": "wm", "key": "", "format": "{pretty-name} ({protocol-name})"},
+    {"type": "command", "key": "", "text": "(\"${SHELL:-/bin/sh}\" --version 2>/dev/null || basename \"${SHELL:-/bin/sh}\") | head -n 1 | sed 's/, version / /;s/ (.*//'"},
+    {"type": "command", "key": "", "text": "kitty --version | cut -d ' ' -f 1,2"},
+    {"type": "cpu", "key": "", "format": "{name}"},
+    {"type": "gpu", "key": "󰍛", "format": "{name} [{type}]", "detectionMethod": "pci"},
+    {"type": "memory", "key": "󰘚", "format": "{used} / {total}"},
+    {"type": "uptime", "key": "", "format": "{formatted}"}
+  ]
+}

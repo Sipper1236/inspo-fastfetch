@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Draw transparent artwork behind live, logo-free Fastfetch output in Kitty."""
+import fcntl
+import math
+import os
+from pathlib import Path
+import re
+import select
+import shutil
+import struct
+import subprocess
+import sys
+import termios
+import time
+import tty
+
+ROOT = Path(__file__).resolve().parent.parent
+DATA = Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local/share'))) / 'inspo-fastfetch'
+ASSETS = ROOT / 'assets' if (ROOT / 'assets/artwork.png').is_file() else DATA
+CONFIG = ROOT / 'config.jsonc' if ASSETS == ROOT / 'assets' else DATA / 'config.jsonc'
+ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+
+
+def cursor_position():
+    """Query the real terminal; always restore its input mode."""
+    fd = os.open('/dev/tty', os.O_RDWR | os.O_NOCTTY)
+    previous = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        os.write(fd, b'\x1b[6n')
+        response = b''
+        deadline = time.monotonic() + 0.6
+        while time.monotonic() < deadline:
+            if select.select([fd], [], [], max(0, deadline - time.monotonic()))[0]:
+                response += os.read(fd, 128)
+                match = re.search(rb'\x1b\[(\d+);(\d+)R', response)
+                if match:
+                    return int(match[1]) - 1, int(match[2]) - 1
+        return None
+    finally:
+        termios.tcsetattr(fd, termios.TCSANOW, previous)
+        os.close(fd)
+
+
+def move(row, col):
+    sys.stdout.write(f'\x1b[{row + 1};{col + 1}H')
+
+
+def main():
+    preview = '--preview' in sys.argv
+    arguments = [arg for arg in sys.argv[1:] if arg != '--preview']
+    binary = shutil.which('fastfetch')
+    if not binary:
+        print('inspo-fetch: install fastfetch first', file=sys.stderr)
+        return 1
+    command = [binary, '--config', str(CONFIG),
+               '--logo-type', 'none', '--pipe', 'true']
+    if arguments or not sys.stdout.isatty() or not os.environ.get('KITTY_WINDOW_ID') or not shutil.which('kitten'):
+        os.execv(command[0], command + arguments)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=12)
+    if result.returncode:
+        sys.stderr.write(result.stderr)
+        return result.returncode
+    lines = [ANSI.sub('', line).strip() for line in result.stdout.splitlines() if line.strip()]
+    # Shorten CPU trademarks without replacing the machine's detected model.
+    lines = [line.replace('(R)', '').replace('(TM)', '') for line in lines]
+    rows, cols, xp, yp = struct.unpack('HHHH', fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b'\0' * 8))
+    if not xp or not yp:
+        size = subprocess.check_output(['kitten', 'icat', '--print-window-size'], text=True)
+        xp, yp = map(int, size.strip().split('x'))
+    cell_w, cell_h = xp / cols, yp / rows
+    # Fifteen text rows tall matches the reference's art-to-type proportions.
+    width = min(math.ceil(15 * cell_h / cell_w * 1844 / 853), cols - 2)
+    height = math.ceil(width * cell_w * 853 / 1844 / cell_h)
+    if width < 60 or height < 14 or height + 3 > rows or len(lines) > 9:
+        print('\n'.join(lines))
+        return 0
+    if preview:
+        print('ドキドキ! ~ ff')
+    # Reserve space first. This scrolls normally when invoked near screen bottom.
+    sys.stdout.write('\n' * (height + 1))
+    sys.stdout.flush()
+    position = cursor_position()
+    if position is None:
+        print('\n'.join(lines))
+        return 0
+    bottom = position[0]
+    top = bottom - height - 1
+    left = 0
+    move(top, left)
+    sys.stdout.flush()
+    subprocess.run(['kitten', 'icat', '--stdin=no', '--transfer-mode=stream',
+                    '--z-index=-1', '--scale-up', '--align=left',
+                    '--place', f'{width}x{height}@{left}x{top}',
+                    '--use-window-size', f'{cols},{rows},{xp},{yp}',
+                    str(ASSETS / 'artwork.png')], check=True)
+    # Image is aspect fitted: calculate coordinates from its actual pixel height.
+    painted_h = width * cell_w * 853 / 1844 / cell_h
+    text_x = left + math.ceil(width * 0.435)
+    text_y = top + max(1, round(painted_h * 0.255))
+    room = cols - text_x - 1
+    for index, line in enumerate(lines):
+        move(text_y + index, text_x)
+        sys.stdout.write('\x1b[38;2;216;216;216m' + line[:room] + '\x1b[0m')
+    move(bottom, 0)
+    if preview:
+        sys.stdout.write('ドキドキ! ~ ')
+    sys.stdout.flush()
+    if preview:
+        # Keep the preview alive; Kitty --hold otherwise opens a new fish shell
+        # whose startup greeting would render a second copy.
+        try:
+            input()
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f'inspo-fetch: {exc}', file=sys.stderr)
+        raise SystemExit(1)
